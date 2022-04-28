@@ -1,3 +1,4 @@
+using hydrants.Models;
 using Microsoft.AspNetCore.Mvc;
 
 namespace hydrants.Controllers;
@@ -6,21 +7,59 @@ namespace hydrants.Controllers;
 [Route("[controller]")]
 public class HydrantController : ControllerBase
 {
-
-
     private readonly ILogger<HydrantController> _logger;
 
-    public HydrantController(ILogger<HydrantController> logger)
+    private readonly SiteDbContext _context;
+
+    public HydrantController(ILogger<HydrantController> logger, SiteDbContext context)
     {
         _logger = logger;
+        _context = context;
     }
 
     [HttpGet]
-    public async Task<ContentResult> GetHydrants()
+    public async Task<ActionResult> GetHydrants()
     {
-        var fetch = new HttpClient();
-        var result = await fetch.GetStringAsync("https://www.gatineau.ca/upload/donneesouvertes/BORNE_FONTAINE.xml");
+        string url = "https://www.gatineau.ca/upload/donneesouvertes/BORNE_FONTAINE.xml";
 
-        return Content(result, "application/xml");
+        FetchCache? nFetch = null;
+
+        if (_context != null && _context.FetchRecords != null)
+        {
+            nFetch = _context.FetchRecords.Where(fr => fr.Url.ToLower() == url).OrderByDescending(fr => fr.Time).FirstOrDefault();
+            if (nFetch != null)
+            {
+                if ((DateTime.Now - nFetch.Time).TotalHours < 4)
+                {
+                    return Content(nFetch.Data, "application/xml");
+                }
+            }
+        }
+
+        var fetch = new HttpClient();
+        try
+        {
+            var result = await fetch.GetStringAsync(url);
+
+            if (_context.FetchRecords != null)
+            {
+                _context.FetchRecords.Add(new FetchCache { Data = result, Time = DateTime.Now, Url = url });
+                await _context.SaveChangesAsync();
+            }
+
+            return Content(result, "application/xml");
+        }
+        catch (Exception)
+        {
+            if (nFetch != null)
+            {
+                _logger.Log(LogLevel.Warning, $"Site unreachable, using cached data for {url}");
+                return Content(nFetch.Data, "application/xml");
+            }
+            else
+            {
+                return BadRequest();
+            }
+        }
     }
 }
